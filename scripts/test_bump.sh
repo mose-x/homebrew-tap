@@ -87,6 +87,39 @@ cask "app" do
 end
 RUBY
 
+# Casks put `sha256` before the `url` it belongs to, split both into
+# per-architecture blocks and interpolate the version into the url, because
+# `brew audit` calls a literal cask url unversioned -- the shape
+# `Casks/svc.rb` uses.
+ARM_URL='https://github.com/acme/archcask/releases/download/v#{version}/archcask-#{version}-arm64.dmg'
+X64_URL='https://github.com/acme/archcask/releases/download/v#{version}/archcask-#{version}-x64.dmg'
+cat >"$TMP/archcask.rb" <<RUBY
+cask "archcask" do
+  on_arm do
+    version "1.2.3"
+    sha256 "$A"
+
+    url "$ARM_URL"
+  end
+  on_intel do
+    version "1.2.3"
+    sha256 "$B"
+
+    url "$X64_URL"
+  end
+
+  name "Archcask"
+  homepage "https://github.com/acme/archcask"
+
+  livecheck do
+    url :url
+    strategy :github_latest
+  end
+
+  app "Archcask.app"
+end
+RUBY
+
 cat >"$TMP/loose.rb" <<'RUBY'
 cask "loose" do
   version "1.0.0"
@@ -163,6 +196,23 @@ check "count_sha256 counts quoted digests" \
 check "extract_pairs joins a url with its digest" \
   "https://github.com/acme/widget/releases/download/v1.2.3/widget-1.2.3-linux.tar.gz $B" \
   "$(extract_pairs "$TMP/widget.rb" | tail -1 | tr '\t' ' ')"
+check "extract_pairs joins a digest placed before its url" \
+  "https://github.com/acme/app/releases/download/v1.2.3/app-1.2.3.dmg $A" \
+  "$(extract_pairs "$TMP/app.rb" | tr '\t' ' ')"
+check "extract_pairs keeps cask arch digests with their own url" \
+  "$ARM_URL $A" \
+  "$(extract_pairs "$TMP/archcask.rb" | head -1 | tr '\t' ' ')"
+check "extract_pairs pairs every url of a cask" \
+  "$X64_URL $B" \
+  "$(extract_pairs "$TMP/archcask.rb" | tail -1 | tr '\t' ' ')"
+check "current_version reads a version inside an arch block" \
+  "1.2.3" "$(current_version "$TMP/archcask.rb")"
+check "source_repo falls back to the homepage of a cask" \
+  "acme/archcask" "$(source_repo "$TMP/archcask.rb")"
+check_pairing "$TMP/archcask.rb"
+check_status "check_pairing accepts a cask with arch blocks" 0 "$?"
+urls_at_version "$TMP/archcask.rb" "1.2.3" >/dev/null 2>&1
+check_status "urls_at_version expands an interpolated cask url" 0 "$?"
 check_pairing "$TMP/widget.rb"
 check_status "check_pairing accepts a well formed formula" 0 "$?"
 check_pairing "$TMP/unpaired.rb" >/dev/null 2>&1
@@ -172,6 +222,11 @@ check_status "check_pairing rejects an unpaired url" 1 "$?"
 
 check "version_from_tag strips a leading v" "1.2.3" "$(version_from_tag v1.2.3)"
 check "version_from_tag keeps a bare tag" "1.2.3" "$(version_from_tag 1.2.3)"
+check "expand_url fills in every interpolation" \
+  "https://x/v9.9.9/a-9.9.9.dmg" \
+  "$(expand_url 'https://x/v#{version}/a-#{version}.dmg' 9.9.9)"
+check "expand_url leaves a literal url alone" \
+  "https://x/a-1.2.3.dmg" "$(expand_url 'https://x/a-1.2.3.dmg' 9.9.9)"
 urls_at_version "$TMP/scanned.rb" "1.2.3" >/dev/null 2>&1
 check_status "urls_at_version accepts urls carrying the version" 0 "$?"
 urls_at_version "$TMP/scanned.rb" "9.9.9" >/dev/null 2>&1
@@ -209,6 +264,21 @@ check "assign_sha256 leaves :no_check alone" \
 check "assign_sha256 is a no-op without quoted digests" \
   "0" "$(diff "$TMP/loose.rb" "$TMP/loose.assigned.rb" | grep -c '^[<>]' || true)"
 
+rewrite_version_and_urls "$TMP/archcask.rb" "1.2.3" "9.9.9" "$TMP/archcask.new.rb"
+check "rewrite updates every arch version stanza of a cask" \
+  "2" "$(grep -c 'version "9\.9\.9"' "$TMP/archcask.new.rb")"
+check "rewrite leaves an interpolated cask url alone" \
+  "2" "$(grep -cF 'download/v#{version}/archcask-#{version}-' "$TMP/archcask.new.rb")"
+urls_at_version "$TMP/archcask.new.rb" "9.9.9" >/dev/null 2>&1
+check_status "rewritten cask urls expand to the new version" 0 "$?"
+printf '%s\n%s\n' "$B" "$A" >"$TMP/hashes-swapped.txt"
+assign_sha256 "$TMP/archcask.rb" "$TMP/hashes-swapped.txt" "$TMP/archcask.assigned.rb"
+check "assign_sha256 follows the digest order of a cask" \
+  "sha256 \"$B\"" \
+  "$(grep -m1 'sha256 "' "$TMP/archcask.assigned.rb" | sed 's/^[[:space:]]*//')"
+check "assign_sha256 keeps a cask paired for the next verify" \
+  "2" "$(extract_pairs "$TMP/archcask.assigned.rb" | grep -c .)"
+
 # --- ruby -----------------------------------------------------------------
 
 if command -v ruby >/dev/null 2>&1; then
@@ -216,6 +286,8 @@ if command -v ruby >/dev/null 2>&1; then
   check_status "rewritten formula is valid ruby" 0 "$?"
   ruby -c "$TMP/app.rb" >/dev/null 2>&1
   check_status "fixture cask is valid ruby" 0 "$?"
+  ruby -c "$TMP/archcask.assigned.rb" >/dev/null 2>&1
+  check_status "rewritten cask is valid ruby" 0 "$?"
 else
   printf 'ok - ruby missing, skipped syntax checks\n'
 fi

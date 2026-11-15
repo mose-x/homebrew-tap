@@ -15,8 +15,10 @@
 # comment, falling back to the `homepage` line when that is a github.com URL.
 #
 # Conventions this script relies on (see README.md):
-#   * `url` lines are literal -- no #{} interpolation
-#   * every `sha256 "..."` line directly follows the `url` line it belongs to
+#   * `url` lines are literal or interpolate `#{version}` and nothing else;
+#     an interpolated url needs a `version` stanza to expand against
+#   * every `sha256 "..."` line sits directly before or after the `url` line
+#     it belongs to (formulas put it after, casks before)
 #   * `sha256 :no_check` is left untouched
 #   * the release tag contains the version (`v2.4.0` for version `2.4.0`)
 #   * the current version is the `version "..."` stanza when there is one,
@@ -99,7 +101,8 @@ extract_urls() { # FILE
     }' "$1"
 }
 
-# "url<TAB>sha256" for every url/sha256 pair, in file order.
+# "url<TAB>sha256" for every url/sha256 pair, in url order. Formulas put the
+# digest after its url, casks before it, so either neighbour is accepted.
 extract_pairs() { # FILE
   awk '
     /^[[:space:]]*livecheck[[:space:]]+do/ { inlc = 1; next }
@@ -108,10 +111,22 @@ extract_pairs() { # FILE
     {
       line = $0
       sub(/^[[:space:]]*/, "", line)
-      if (line ~ /^url[[:space:]]+"/) { pending = quoted(line); next }
-      if (pending != "" && line ~ /^sha256[[:space:]]+"/) {
-        printf "%s\t%s\n", pending, quoted(line)
-        pending = ""
+      if (line ~ /^url[[:space:]]+"/) {
+        if (pending_sha != "") {
+          printf "%s\t%s\n", quoted(line), pending_sha
+          pending_sha = ""
+        } else {
+          pending_url = quoted(line)
+        }
+        next
+      }
+      if (line ~ /^sha256[[:space:]]+"/) {
+        if (pending_url != "") {
+          printf "%s\t%s\n", pending_url, quoted(line)
+          pending_url = ""
+        } else {
+          pending_sha = quoted(line)
+        }
         next
       }
     }
@@ -151,6 +166,7 @@ urls_at_version() { # FILE VERSION
   local url
   while read -r url; do
     [ -n "$url" ] || continue
+    url=$(expand_url "$url" "$2")
     case "$url" in
     *"$2"*) ;;
     *)
@@ -162,6 +178,15 @@ urls_at_version() { # FILE VERSION
 }
 
 version_from_tag() { printf '%s\n' "${1#v}"; }
+
+# Homebrew expands `#{version}` in a url itself; bump.sh only ever sees the raw
+# source line, so it has to do the same before it can download anything. Casks
+# need the interpolation -- `brew audit` calls a literal url unversioned and
+# then demands `sha256 :no_check` -- which is why it is supported at all.
+expand_url() { # URL VERSION
+  local needle='#{version}'
+  printf '%s\n' "${1//"$needle"/$2}"
+}
 
 # --- upstream lookup -------------------------------------------------------
 
@@ -350,6 +375,7 @@ cmd_write() { # ROOT FORCE DRY [NAME ...]
     : >"$list"
     while read -r url; do
       [ -n "$url" ] || continue
+      url=$(expand_url "$url" "$new")
       sha=$(download_sha256 "$url") || die "$name: cannot download $url"
       printf '%s\n' "$sha" >>"$list"
       log "  $sha  $(basename "$url")"
@@ -367,12 +393,14 @@ cmd_verify() { # ROOT [NAME ...]
   local root="$1"
   shift
   ensure_tmp
-  local status=0 f name url want got
+  local status=0 f name cur url want got
   while read -r f; do
     name=$(basename "$f" .rb)
     check_pairing "$f" || status=1
+    cur=$(current_version "$f")
     while IFS="$(printf '\t')" read -r url want; do
       [ -n "$url" ] || continue
+      url=$(expand_url "$url" "$cur")
       if ! got=$(download_sha256 "$url"); then
         printf 'FAIL %-12s cannot download %s\n' "$name" "$url"
         status=1
