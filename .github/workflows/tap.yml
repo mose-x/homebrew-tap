@@ -1,0 +1,205 @@
+name: tap
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  schedule:
+    # 21:23 UTC every day. The odd minute keeps us out of the on-the-hour
+    # cron rush, when GitHub delays scheduled workflows.
+    - cron: "23 21 * * *"
+  workflow_dispatch:
+    inputs:
+      formula:
+        description: "Only bump this entry (empty = every entry)"
+        required: false
+        default: ""
+      mode:
+        description: "direct pushes to the branch, pr opens a pull request"
+        required: false
+        default: "direct"
+        type: choice
+        options:
+          - direct
+          - pr
+      force:
+        description: "Recompute checksums even when the version already matches"
+        required: false
+        default: false
+        type: boolean
+
+# Cancel superseded PR runs, but never a run that is halfway through pushing
+# a bump.
+concurrency:
+  group: tap-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+jobs:
+  # Shared identity + commit-message rules, see https://github.com/mose-x/code-hooks
+  commit-lint:
+    name: commit-lint
+    uses: mose-x/code-hooks/.github/workflows/commit-lint.yml@main
+
+  # Everything that needs no brew: shell linting, the offline bump.sh tests and
+  # a re-download of every asset to prove the recorded sha256 values.
+  lint:
+    name: lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check the shell scripts parse
+        run: |
+          set -euo pipefail
+          for script in scripts/*.sh; do
+            bash -n "$script"
+          done
+
+      - name: shellcheck
+        run: shellcheck scripts/*.sh
+
+      - name: bump.sh unit tests
+        run: bash scripts/test_bump.sh
+
+      - name: Checksums match the published assets
+        env:
+          # Only used for the api.github.com rate limit, never for pushing.
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: scripts/bump.sh verify
+
+  # Real brew run: taps the working tree, audits it, then installs, tests and
+  # uninstalls every entry. macOS minutes are the expensive ones, so this only
+  # runs for commits that exist (push / PR) -- a scheduled bump lands on main
+  # and gets validated by the push it triggers.
+  brew:
+    name: brew
+    runs-on: macos-latest
+    if: github.event_name == 'push' || github.event_name == 'pull_request'
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Validate with brew
+        env:
+          HOMEBREW_GITHUB_API_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: scripts/validate-brew.sh
+
+  # Point the tap at whatever upstream published since the last run.
+  bump:
+    name: bump
+    runs-on: ubuntu-latest
+    needs: lint
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    permissions:
+      contents: write
+      pull-requests: write
+    env:
+      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Validate the requested inputs
+        env:
+          # workflow_dispatch inputs reach the runner verbatim, so they are
+          # shape-checked here and then only ever used through the
+          # environment -- never interpolated into a shell command line.
+          FORMULA: ${{ github.event.inputs.formula }}
+          MODE: ${{ github.event.inputs.mode }}
+          FORCE: ${{ github.event.inputs.force }}
+        run: |
+          set -euo pipefail
+          if [ -n "$FORMULA" ] && ! printf '%s' "$FORMULA" | grep -Eq '^[a-z0-9][a-z0-9._+-]*$'; then
+            echo "::error::not an entry name: $FORMULA"
+            exit 1
+          fi
+          case "${MODE:-direct}" in
+          direct | pr) ;;
+          *)
+            echo "::error::mode must be direct or pr, got: $MODE"
+            exit 1
+            ;;
+          esac
+          case "${FORCE:-false}" in
+          true | false | "") ;;
+          *)
+            echo "::error::force must be true or false, got: $FORCE"
+            exit 1
+            ;;
+          esac
+          {
+            echo "BUMP_FORMULA=$FORMULA"
+            echo "BUMP_MODE=${MODE:-direct}"
+            echo "BUMP_FORCE=${FORCE:-false}"
+          } >>"$GITHUB_ENV"
+
+      - name: Rewrite the entries that are behind upstream
+        run: |
+          set -euo pipefail
+          args=()
+          if [ -n "$BUMP_FORMULA" ]; then args+=(--formula "$BUMP_FORMULA"); fi
+          if [ "$BUMP_FORCE" = true ]; then args+=(--force); fi
+          scripts/bump.sh write ${args+"${args[@]}"}
+
+      - name: Verify the rewritten checksums
+        run: |
+          set -euo pipefail
+          args=()
+          if [ -n "$BUMP_FORMULA" ]; then args+=(--formula "$BUMP_FORMULA"); fi
+          scripts/bump.sh verify ${args+"${args[@]}"}
+
+      - name: Publish
+        run: |
+          set -euo pipefail
+          if git diff --quiet; then
+            echo "Every entry is already at its upstream release."
+            exit 0
+          fi
+          git --no-pager diff --stat
+
+          # current_version comes from bump.sh; sourcing it does not run it.
+          # shellcheck source=scripts/bump.sh disable=SC1091
+          . scripts/bump.sh
+          entries=()
+          while IFS= read -r changed; do
+            [ -n "$changed" ] || continue
+            entries+=("$(basename "$changed" .rb) $(current_version "$changed")")
+          done < <(git diff --name-only -- Formula Casks)
+          list=$(IFS=,; echo "${entries[*]}")
+
+          subject="chore(tap): bump $list"
+          # hook-rules.conf caps the subject at 100 and the whole message at
+          # 200 characters.
+          if [ "${#entries[@]}" -gt 3 ] || [ "${#subject}" -gt 90 ]; then
+            subject="chore(tap): bump ${#entries[@]} entries"
+            list="${#entries[@]} entries"
+          fi
+
+          git config user.name "mose-zm"
+          git config user.email "602187256@qq.com"
+          git add -A
+          git commit -m "$subject"
+
+          if [ "$BUMP_MODE" != pr ]; then
+            git push origin "HEAD:refs/heads/$GITHUB_REF_NAME"
+            exit 0
+          fi
+
+          # Name the branch after its content, so a second run for the same
+          # upstream release updates the open pull request instead of opening
+          # another one.
+          slug=$(printf '%s' "$list" | tr ' ,' '--' | tr -cd 'a-z0-9.+-')
+          branch="bump/$slug"
+          body="scripts/bump.sh recomputed every checksum from the published release assets: $list.
+
+          The lint and brew jobs validate this branch before it is merged."
+          git checkout -q -B "$branch"
+          git push -f origin "$branch"
+          if [ -n "$(gh pr list --head "$branch" --state open --json number --jq '.[0].number')" ]; then
+            echo "An open pull request already uses $branch; the new commit was pushed to it."
+            exit 0
+          fi
+          gh pr create --base main --head "$branch" --title "$subject" --body "$body"
