@@ -9,11 +9,13 @@ workflow keeps the versions and checksums current.
 ```sh
 brew tap mose-x/tap
 brew install mose-x/tap/nvm-rust
+brew install --cask mose-x/tap/svc
 ```
 
 Homebrew 6 does not load entries from a third-party tap until that tap is
 trusted. Naming it in full on the command line, as above, always works. To use
-short names (`brew install nvm-rust`) as well, trust the tap once:
+short names (`brew install nvm-rust`, `brew install --cask svc`) as well, trust
+the tap once:
 
 ```sh
 brew trust mose-x/tap        # brew untrust mose-x/tap undoes it
@@ -26,6 +28,7 @@ Removing everything again:
 
 ```sh
 brew uninstall mose-x/tap/nvm-rust
+brew uninstall --cask mose-x/tap/svc
 brew untap mose-x/tap
 ```
 
@@ -34,10 +37,17 @@ brew untap mose-x/tap
 | Entry | Kind | Upstream | Platforms |
 | --- | --- | --- | --- |
 | [`nvm-rust`](Formula/nvm-rust.rb) | formula | [mose-x/nvm-rust](https://github.com/mose-x/nvm-rust) | macOS x64/arm64, Linux x64/arm64 |
+| [`svc`](Casks/svc.rb) | cask | [mose-x/svc](https://github.com/mose-x/svc) | macOS x64/arm64 |
 
 `nvm-rust` installs the `nvm` binary; run `nvm init` once afterwards to create
 the shims and shell configuration (`brew info mose-x/tap/nvm-rust` prints the
 full caveats, including how to clean up before uninstalling).
+
+`svc` is a desktop app, so it lands in `/Applications` as `svc.app` and covers
+macOS only — Windows and Linux take the installer or the `.deb`/`.rpm` from the
+[release](https://github.com/mose-x/svc/releases/latest). The binary is not code
+signed and the app keeps every managed SDK in `~/.svc`; `brew info --cask
+mose-x/tap/svc` prints the first-launch and cleanup caveats.
 
 ## Keeping entries current
 
@@ -81,14 +91,19 @@ runs on the bash 3.2 that macOS ships.
 1. Create `Formula/<name>.rb` for a command line tool, or `Casks/<name>.rb` for
    a GUI app. Copy an existing entry as the starting point.
 2. Follow the conventions `bump.sh` relies on:
-   - `url` lines are literal — no `#{}` interpolation.
-   - Each `sha256 "..."` directly follows the `url` it belongs to.
-     `sha256 :no_check` is left alone.
+   - `url` lines are literal, or interpolate `#{version}` and nothing else;
+     `bump.sh` expands that one placeholder before it downloads anything. A
+     cask has to interpolate — `brew audit --strict` reads a literal cask url
+     as unversioned and then demands `sha256 :no_check`.
+   - Each `sha256 "..."` sits next to the `url` it belongs to: after it in a
+     formula, before it in a cask, which is the stanza order `brew style`
+     enforces. `sha256 :no_check` is left alone.
    - The release tag contains the version (`v2.4.0` for `2.4.0`).
-   - No `version` stanza unless the urls cannot express the version:
-     `brew audit --strict` rejects one that only repeats what the url says.
-     Without a stanza, `bump.sh` reads the current version back out of the
-     `.../releases/download/<tag>/...` part of the urls.
+   - A formula carries no `version` stanza unless the urls cannot express the
+     version: `brew audit --strict` rejects one that only repeats what the url
+     says. Without a stanza, `bump.sh` reads the current version back out of
+     the `.../releases/download/<tag>/...` part of the urls. A cask always has
+     one, and it is what `#{version}` expands to.
    - `homepage` is the upstream GitHub repo, or add a
      `# tap-source: owner/repo` comment when it is not.
 3. Fill in the checksums with `scripts/bump.sh write --formula <name> --force`,
@@ -106,8 +121,9 @@ the identity and message rules in
 
 ```sh
 brew tap mose-x/tap
-brew install mose-x/tap/nvm-rust   # 全名安装，任何 Homebrew 版本都可以
-brew trust mose-x/tap              # 之后才能用 brew install nvm-rust 短名
+brew install mose-x/tap/nvm-rust      # 全名安装，任何 Homebrew 版本都可以
+brew install --cask mose-x/tap/svc    # 桌面应用走 cask，仅 macOS
+brew trust mose-x/tap                 # 之后才能用 brew install nvm-rust 短名
 ```
 
 GitHub Actions 每天 21:23 (UTC) 检查上游 release，自动重写 url、重新计算
