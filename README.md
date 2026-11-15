@@ -7,22 +7,28 @@ workflow keeps the versions and checksums current.
 ## Usage
 
 ```sh
+brew trust mose-x/tap
 brew tap mose-x/tap
 brew install mose-x/tap/nvm-rust
 brew install --cask mose-x/tap/svc
 ```
 
-Homebrew 6 does not load entries from a third-party tap until that tap is
-trusted. Naming it in full on the command line, as above, always works. To use
-short names (`brew install nvm-rust`, `brew install --cask svc`) as well, trust
-the tap once:
+Homebrew 7 refuses to load *any* entry of an untrusted third-party tap, the
+fully qualified names above included, so `brew trust mose-x/tap` comes first. It
+is idempotent and does not need the tap to exist yet, which makes that order
+correct on a machine that has never seen it too. Homebrew 6 only required trust
+for the short names (`brew install nvm-rust`, `brew install --cask svc`);
+`brew untrust mose-x/tap` undoes it on either.
 
-```sh
-brew trust mose-x/tap        # brew untrust mose-x/tap undoes it
-```
-
-Until then `brew tap-info mose-x/tap` reports the tap as `Untrusted`, which is
-expected and harmless.
+Trust is recorded per user in `~/.homebrew/trust.json`
+(`$XDG_CONFIG_HOME/homebrew/trust.json` when that is set), not inside the tap
+checkout, so it survives `brew untap`/`brew tap` and `brew update` — but a fresh
+Homebrew install, a new machine or another user account has to run it once more.
+`brew trust` itself needs Homebrew 5.1.15 or newer; older releases neither
+enforce trust nor ship the command. Until it runs, `brew tap-info mose-x/tap`
+reports the tap as `Untrusted`, which is expected and harmless. Prefer it over
+`HOMEBREW_NO_REQUIRE_TAP_TRUST`, which upstream has deprecated and slated for
+removal.
 
 Removing everything again:
 
@@ -120,11 +126,18 @@ the identity and message rules in
 ## 中文速览
 
 ```sh
+brew trust mose-x/tap                 # Homebrew 7 起必需；幂等，一次即可
 brew tap mose-x/tap
-brew install mose-x/tap/nvm-rust      # 全名安装，任何 Homebrew 版本都可以
+brew install mose-x/tap/nvm-rust      # 全名安装，避免与其他 tap 的同名条目冲突
 brew install --cask mose-x/tap/svc    # 桌面应用走 cask，仅 macOS
-brew trust mose-x/tap                 # 之后才能用 brew install nvm-rust 短名
 ```
+
+Homebrew 7 会拒绝加载未信任第三方 tap 的**任何**条目，全限定名也不例外，所以
+`brew trust mose-x/tap` 要放在最前面；它是幂等的，也不要求 tap 已经存在。信任状态按用户
+记录在 `~/.homebrew/trust.json`，不在 tap 目录里，因此 `brew untap`/`brew tap` 和
+`brew update` 都不会清掉它，但重装 Homebrew、换机器或换用户账号都要再执行一次。
+`brew trust` 需要 Homebrew 5.1.15 及以上，更老的版本既不强制信任也没有这个命令；
+`brew untrust mose-x/tap` 可撤销。
 
 GitHub Actions 每天 21:23 (UTC) 检查上游 release，自动重写 url、重新计算
 sha256 并提交，推送到 `main` 后会再跑一次完整的 brew 安装测试。新增条目请
