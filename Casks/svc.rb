@@ -1,13 +1,13 @@
 cask "svc" do
   on_arm do
-    version "2.2.0"
-    sha256 "3a1c5cdf577d21414fc7892b5d3cc8d50aabe39a8a115e9cc7737f2f2562d91e"
+    version "2.2.1"
+    sha256 "4ebaaa1f7fe2e920774c48278424101e2e81db9396fccfb620d770a3cd60aa53"
 
     url "https://github.com/mose-x/svc/releases/download/v#{version}/svc-#{version}-macos-arm64.dmg"
   end
   on_intel do
-    version "2.2.0"
-    sha256 "c2e8f94448380e6011da79dd140d78a04991978775cb1aa9c8979c6bb67995b1"
+    version "2.2.1"
+    sha256 "d9d4fc06645f4e6a8195ba7a84bb4d8d08302232f69c4493c28e963e3f10975b"
 
     url "https://github.com/mose-x/svc/releases/download/v#{version}/svc-#{version}-macos-x64.dmg"
   end
