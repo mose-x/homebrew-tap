@@ -43,6 +43,14 @@ export HOMEBREW_NO_AUTO_UPDATE=1
 export HOMEBREW_NO_INSTALL_CLEANUP=1
 export HOMEBREW_NO_ENV_HINTS=1
 
+# Homebrew 6 dropped `--no-quarantine`: it no longer stamps cask artifacts at
+# all, so there is nothing to opt out of. Pass the flag only where the brew in
+# front of us still offers it.
+cask_install_flags=()
+if brew install --help 2>&1 | grep -q -- '--no-quarantine'; then
+  cask_install_flags+=(--no-quarantine)
+fi
+
 tap_dir="$(brew --repository)/Library/Taps/$TAP_USER/homebrew-$TAP_NAME"
 
 # Invoked through the trap below.
@@ -127,7 +135,7 @@ for path in "$ROOT"/Casks/*.rb; do
   name=$(basename "$path" .rb)
   run brew fetch --force --retry --cask "$TAP/$name"
   if [ "$install_mode" = 1 ]; then
-    run brew install --cask --no-quarantine "$TAP/$name"
+    run brew install --cask ${cask_install_flags+"${cask_install_flags[@]}"} "$TAP/$name"
     run brew uninstall --cask "$TAP/$name"
   fi
 done
